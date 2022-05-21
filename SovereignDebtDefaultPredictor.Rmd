@@ -1,0 +1,250 @@
+---
+title: "Predicting Probability of Nations Defaulting on Their Sovereign Debt"
+author: "Jake, Ragib, Tim, Trevin"
+date: "5/7/2022"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Getting Data}
+library(tinytex)
+library(readxl)
+library(tidyverse) 
+library(dplyr)
+library(peacesciencer)
+library(WDI)
+
+debtData <- read_excel("CRAG-Database-Update-05-07-21.xlsx")
+
+
+warData <- create_stateyears(system = 'gw', subset_years = c(1960:2020))
+warData<-(add_ucdp_acd(warData, only_wars = FALSE))[2:4]
+
+  
+worldBankData <- WDI(indicator = c("GC.DOD.TOTL.GD.ZS", "NY.GDP.MKTP.KD.ZG", 
+                                   "NY.GDP.MKTP.CD", "FP.CPI.TOTL.ZG", "FI.RES.TOTL.CD", 
+                                   "DT.DOD.DSTC.IR.ZS", "SL.UEM.TOTL.ZS", "SL.TLF.TOTL.IN", 
+                                   "DT.DOD.DIMF.CD", "FR.INR.RINR", "SP.POP.DPND", 
+                                   "GC.TAX.TOTL.GD.ZS"), start = 1960, end = 2020, extra = TRUE) 
+
+
+
+
+worldBankData <- (subset(worldBankData, region != "Aggregates"))[c(2,3,5:16)]
+
+
+```
+
+```{r Organizing World Bank Data}
+
+
+colnames(worldBankData) <- c('country', 'year', 'Government Debt % of GDP', 
+                             'Annual GDP Growth %', 'GDP', 'Inflation %', 
+                             'Total Reserves USD', 'Short-Term Debt % of GDP', 
+                             'Total Unemployment Rate', 'Labor Force Total', 
+                             'Use of IMF Credit', 'Real Interest Rate %',
+                             '% of Population Working-Age', 'Tax Revenue % of GDP')
+
+for(increaser in 3:ncol(worldBankData)){
+  for (counter in 1:nrow(worldBankData)){ #Replaces NA with 0
+    if(is.na(worldBankData[counter,increaser])){
+      worldBankData[counter,increaser] <- 0
+    }
+    
+  }
+}
+
+worldBankData <- worldBankData[order(worldBankData$year),]
+
+view(worldBankData)
+
+```
+
+```{r Organizing War Data}
+colnames(warData) <- c('country', 'year', 'war')
+
+
+
+for (counter in 1:nrow(warData)){ #Replaces NA with 0
+  if(is.na(warData[counter,3])){
+    warData[counter,3] <- 0
+  }
+  
+}
+
+warData <- warData[order(warData$year),]
+
+view(warData)
+```
+
+
+```{r Converting Default Data Into Dummy Variable}
+
+
+for (counter in 1:nrow(debtData)){ #Converts the nominal default amount into dummy variable 1 or 0
+  if(is.na(debtData[counter,3])){
+    debtData[counter,3] <- 0
+  }
+  if (debtData[counter,3] > 0){
+    debtData[counter,3] <- 1
+  }
+  else{
+    debtData[counter,3] <- 0
+  }
+}
+
+debtData <- debtData[order(debtData$year),]
+
+view(debtData)
+
+```
+
+```{r Combining Dataframes (warData and worldBankData)}
+
+worldBankData[15] <- NA
+colnames(worldBankData)[15] <- c("war")
+
+for (counter in 1:nrow(worldBankData)){
+  warCell <- warData[which(warData$country==worldBankData$country[counter] 
+                           & warData$year == worldBankData$year[counter]),][3]
+  
+  if(nrow(warCell) != 0){
+    worldBankData[counter,15] <- warCell
+  }
+}
+	
+worldBankData <- worldBankData[complete.cases(worldBankData),]
+
+view(worldBankData)
+```
+
+```{r Combining Dataframes (debtData and worldBankData)}
+
+worldBankData[16] <- NA
+colnames(worldBankData)[16] <- c("default")
+
+for (counter in 1:nrow(worldBankData)){
+  debtCell <- debtData[which(debtData$country==worldBankData$country[counter] 
+                             & debtData$year == worldBankData$year[counter]),][3]
+  
+  if(nrow(debtCell) != 0){
+    worldBankData[counter,16] <- debtCell
+  }
+}
+	
+worldBankData <- worldBankData[complete.cases(worldBankData),]
+
+finalDataSet <- worldBankData
+
+view(finalDataSet)
+```
+
+```{r Creating Subsets of finalDataSet}
+
+completeDataSet <- (finalDataSet[2481:(nrow(finalDataSet)),]) 
+#Every column filled in entirely 1991-2020
+
+longTermDataSet <- (subset(finalDataSet, select = -c(3,9,10))) 
+#1960-2020 without government debt % GPD, unemployment rate, and labor force (not enough data during this time range)
+
+
+```
+
+
+```{r Logistic Regression for completeDataSet}
+library(pscl)
+library(ROCR)
+
+CompleteDataSample <- sample(c(TRUE, FALSE), nrow(completeDataSet), 
+                             replace=TRUE, prob=c(0.7,0.3))
+#Use 70% of dataset as training set and remaining 30% as testing set
+
+#CompleteDataTrain <- completeDataSet[sample, ]
+CompleteDataTrain <- completeDataSet[CompleteDataSample, ]
+CompleteDataTrain <- CompleteDataTrain[3:16]
+
+#CompleteDataTest <- completeDataSet[!sample, ]  
+CompleteDataTest <- completeDataSet[!CompleteDataSample, ]  
+CompleteDataTest <- CompleteDataTest[3:16]
+
+
+CompleteDataModel <- glm(default~ ., family=binomial (link = "logit"), data=CompleteDataTrain[,-1])
+
+summary(CompleteDataModel)
+anova(CompleteDataModel, test="Chisq") #table of deviance
+pR2(CompleteDataModel) #There is no r^2 for logistic regression. This is a replacement
+
+plot(CompleteDataModel)
+
+fitted.results <- predict(CompleteDataModel,newdata=subset(CompleteDataTest,select=c(1:13)),type='response')
+fitted.results <- ifelse(fitted.results > 0.5,1,0)
+
+misClasificError <- mean(fitted.results != CompleteDataTest$default)
+print(paste('Accuracy',1-misClasificError))
+
+
+p <- predict(CompleteDataModel, newdata=subset(CompleteDataTest,select=c(1:13)),type="response")
+pr <- prediction(p, CompleteDataTest$default)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc #Good model will have this close to 1
+
+```
+
+
+```{r Logistic Regression for LongTermDataSet}
+
+LongTermDataSample <- sample(c(TRUE, FALSE), nrow(longTermDataSet), 
+                             replace=TRUE, prob=c(0.7,0.3)) #Use 70% of dataset as training set and remaining 30% as testing set
+
+#LongTermDataTrain <- longTermDataSet[sample, ]
+LongTermDataTrain <- longTermDataSet[LongTermDataSample, ]
+LongTermDataTrain <- LongTermDataTrain[3:13]
+
+#LongTermDataTest <- longTermDataSet[!sample, ]  
+LongTermDataTest <- longTermDataSet[!LongTermDataSample, ]  
+LongTermDataTest <- LongTermDataTest[3:13]
+
+
+LongTermDataModel <- glm(default~ ., family=binomial (link = "logit"), data=LongTermDataTrain[,-1])
+
+summary(LongTermDataModel)
+anova(LongTermDataModel, test="Chisq") #table of deviance
+pR2(LongTermDataModel) #There is no r^2 for logistic regression. This is a replacement
+
+plot(LongTermDataModel)
+
+fitted.results <- predict(LongTermDataModel,
+                          newdata=subset(LongTermDataTest,select=c(1:10)),type='response')
+fitted.results <- ifelse(fitted.results > 0.5,1,0)
+
+misClasificError <- mean(fitted.results != LongTermDataTest$default)
+print(paste('Accuracy',1-misClasificError))
+
+
+p <- predict(LongTermDataModel, newdata=subset(LongTermDataTest,select=c(1:10)),type="response")
+pr <- prediction(p, LongTermDataTest$default)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc #Good model will have this close to 1
+
+```
+
+
+
+
+
+
+
+
